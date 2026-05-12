@@ -4,11 +4,10 @@ import {
   Tag, Calendar, Microscope, ZoomIn, AlertCircle, Loader,
 } from "lucide-react";
 import {
-  supabase,
   fetchPathogens, insertPathogen,
-  fetchEntries,   insertEntry,
-  uploadImage,
+  fetchEntries, insertEntry, uploadImage,
 } from "./lib/supabase.js";
+import { PATHOGEN_DB } from "./lib/pathogens.js";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -127,7 +126,7 @@ function Spinner() {
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
       padding: "60px 20px", color: "#4a6080" }}>
       <Loader size={20} style={{ animation: "spin 1s linear infinite" }} />
-      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+      <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
     </div>
   );
 }
@@ -139,16 +138,76 @@ function ErrorMsg({ msg }) {
       padding: "12px 16px", background: "rgba(248,113,113,0.08)",
       border: "1px solid rgba(248,113,113,0.2)", borderRadius: "4px",
       color: "#f87171", fontSize: "12px", fontFamily: "'Courier New',monospace",
-      margin: "16px 0",
     }}>
       <AlertCircle size={14} /> {msg}
     </div>
   );
 }
 
+// ─── Pathogen Autocomplete ────────────────────────────────────────────────────
+
+function PathogenAutocomplete({ value, onChange, onSelect }) {
+  const [open, setOpen] = useState(false);
+
+  const suggestions = value.length >= 2
+    ? PATHOGEN_DB.filter(p =>
+        p.name.toLowerCase().includes(value.toLowerCase()) ||
+        p.commonName.toLowerCase().includes(value.toLowerCase())
+      ).slice(0, 8)
+    : [];
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={value}
+        onChange={e => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder="ex: Aspergillus fumigatus"
+        style={{ ...iS, fontStyle: value ? "italic" : "normal" }}
+        autoComplete="off"
+      />
+      {open && suggestions.length > 0 && (
+        <div style={{
+          position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50,
+          background: "#0f1825", border: "1px solid rgba(255,255,255,0.1)",
+          borderRadius: "4px", marginTop: "3px",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+          maxHeight: "240px", overflowY: "auto",
+        }}>
+          {suggestions.map((p, i) => {
+            const c = CAT[p.category] || CAT.other;
+            return (
+              <div key={i} onMouseDown={() => { onSelect(p); setOpen(false); }} style={{
+                padding: "9px 12px", cursor: "pointer",
+                borderBottom: "1px solid rgba(255,255,255,0.04)",
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px",
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.04)"}
+              onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                <div>
+                  <div style={{ fontSize: "13px", fontStyle: "italic", color: "#dde4f0",
+                    fontFamily: "Georgia,serif" }}>{p.name}</div>
+                  <div style={{ fontSize: "10px", color: "#5a7090",
+                    fontFamily: "'Courier New',monospace" }}>{p.commonName}</div>
+                </div>
+                <span style={{
+                  fontSize: "8px", padding: "1px 6px", borderRadius: "2px", whiteSpace: "nowrap",
+                  color: c.color, background: c.bg, border: `1px solid ${c.border}`,
+                  fontFamily: "'Courier New',monospace", letterSpacing: "0.08em", textTransform: "uppercase",
+                }}>{c.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Modal ────────────────────────────────────────────────────────────────────
 
-function Modal({ title, onClose, children }) {
+function Modal({ title, onClose, children, wide }) {
   return (
     <div style={{
       position: "fixed", inset: 0, zIndex: 500,
@@ -157,19 +216,20 @@ function Modal({ title, onClose, children }) {
     }} onClick={e => e.target === e.currentTarget && onClose()}>
       <div style={{
         background: "#0f1621", border: "1px solid rgba(255,255,255,0.07)",
-        borderRadius: "8px", width: "100%", maxWidth: "500px",
+        borderRadius: "8px", width: "100%", maxWidth: wide ? "680px" : "500px",
         maxHeight: "90vh", overflowY: "auto",
         boxShadow: "0 24px 64px rgba(0,0,0,0.7)",
       }}>
         <div style={{
           display: "flex", alignItems: "center", justifyContent: "space-between",
           padding: "18px 22px 14px", borderBottom: "1px solid rgba(255,255,255,0.05)",
+          position: "sticky", top: 0, background: "#0f1621", zIndex: 10,
         }}>
           <h3 style={{ margin: 0, fontSize: "14px", color: "#c8c5be",
             fontFamily: "Georgia,serif", fontWeight: "normal" }}>{title}</h3>
           <button onClick={onClose} style={{
             background: "none", border: "none", color: "#5a7090",
-            cursor: "pointer", padding: "4px", display: "flex", borderRadius: "4px",
+            cursor: "pointer", padding: "4px", display: "flex",
           }}><X size={16} /></button>
         </div>
         <div style={{ padding: "20px 22px 24px" }}>{children}</div>
@@ -181,16 +241,24 @@ function Modal({ title, onClose, children }) {
 // ─── Add Pathogen Modal ───────────────────────────────────────────────────────
 
 function AddPathogenModal({ onClose, onSaved }) {
-  const [form, setForm] = useState({ name: "", commonName: "", category: "fungi", description: "" });
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState(null);
-  const set = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+  const [name, setName]               = useState("");
+  const [commonName, setCommonName]   = useState("");
+  const [category, setCategory]       = useState("fungi");
+  const [description, setDescription] = useState("");
+  const [saving, setSaving]           = useState(false);
+  const [err, setErr]                 = useState(null);
+
+  const handleSelect = (p) => {
+    setName(p.name);
+    setCommonName(p.commonName);
+    setCategory(p.category);
+  };
 
   const handleSave = async () => {
-    if (!form.name.trim()) return;
+    if (!name.trim()) return;
     setSaving(true); setErr(null);
     try {
-      const created = await insertPathogen(form);
+      const created = await insertPathogen({ name, commonName, category, description });
       onSaved({ ...created, entries: [] });
       onClose();
     } catch (e) {
@@ -206,28 +274,32 @@ function AddPathogenModal({ onClose, onSaved }) {
         {err && <ErrorMsg msg={err} />}
         <div>
           <label style={lS}>Nome científico *</label>
-          <input value={form.name} onChange={set("name")}
-            placeholder="ex: Aspergillus fumigatus"
-            style={{ ...iS, fontStyle: "italic" }} />
+          <PathogenAutocomplete value={name} onChange={setName} onSelect={handleSelect} />
+          <div style={{ fontSize: "10px", color: "#3a5070", marginTop: "4px",
+            fontFamily: "'Courier New',monospace" }}>
+            Digite 2+ letras para sugestões automáticas
+          </div>
         </div>
         <div>
           <label style={lS}>Nome da doença / comum</label>
-          <input value={form.commonName} onChange={set("commonName")}
+          <input value={commonName} onChange={e => setCommonName(e.target.value)}
             placeholder="ex: Aspergilose invasiva" style={iS} />
         </div>
         <div>
           <label style={lS}>Categoria *</label>
-          <select value={form.category} onChange={set("category")} style={{ ...iS, cursor: "pointer" }}>
+          <select value={category} onChange={e => setCategory(e.target.value)}
+            style={{ ...iS, cursor: "pointer" }}>
             {Object.entries(CAT).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
           </select>
         </div>
         <div>
           <label style={lS}>Descrição</label>
-          <textarea value={form.description} onChange={set("description")} rows={3}
+          <textarea value={description} onChange={e => setDescription(e.target.value)} rows={3}
             placeholder="Características gerais, relevância clínica, epidemiologia…"
             style={{ ...iS, resize: "vertical", lineHeight: 1.65 }} />
         </div>
-        <button onClick={handleSave} disabled={saving} style={{ ...btnPrimary, opacity: saving ? 0.6 : 1 }}>
+        <button onClick={handleSave} disabled={saving}
+          style={{ ...btnPrimary, opacity: saving ? 0.6 : 1 }}>
           {saving ? "SALVANDO…" : "CRIAR VERBETE"}
         </button>
       </div>
@@ -235,94 +307,150 @@ function AddPathogenModal({ onClose, onSaved }) {
   );
 }
 
-// ─── Add Entry Modal ──────────────────────────────────────────────────────────
+// ─── Bulk Add Entry Modal ─────────────────────────────────────────────────────
 
 function AddEntryModal({ pathogen, onClose, onSaved }) {
   const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState({
     method: "", material: "", magnification: "100x oil", date: today, notes: "",
   });
-  const [file, setFile]     = useState(null);
-  const [preview, setPreview] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [err, setErr]       = useState(null);
+  const [files, setFiles]       = useState([]); // [{file, preview, id}]
+  const [progress, setProgress] = useState(null);
+  const [err, setErr]           = useState(null);
   const fileRef = useRef();
   const camRef  = useRef();
   const set = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
 
-  const handleFile = e => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    setFile(f);
-    const r = new FileReader();
-    r.onload = ev => setPreview(ev.target.result);
-    r.readAsDataURL(f);
+  const handleFiles = (e) => {
+    const selected = Array.from(e.target.files || []);
+    if (!selected.length) return;
+    const newFiles = selected.map(file => ({
+      file, id: Math.random().toString(36).slice(2),
+      preview: URL.createObjectURL(file),
+    }));
+    setFiles(prev => [...prev, ...newFiles]);
+    e.target.value = "";
+  };
+
+  const removeFile = (id) => {
+    setFiles(prev => {
+      const f = prev.find(x => x.id === id);
+      if (f) URL.revokeObjectURL(f.preview);
+      return prev.filter(x => x.id !== id);
+    });
   };
 
   const handleSave = async () => {
     if (!form.method || !form.material) {
       setErr("Coloração/método e material são obrigatórios."); return;
     }
-    setSaving(true); setErr(null);
-    try {
-      let imageUrl = null;
-      if (file) {
-        imageUrl = await uploadImage(pathogen.id, file);
+    setErr(null);
+    const items = files.length > 0 ? files : [{ file: null, id: "noimg" }];
+    setProgress({ current: 0, total: items.length });
+
+    for (let i = 0; i < items.length; i++) {
+      setProgress({ current: i + 1, total: items.length });
+      try {
+        let imageUrl = null;
+        if (items[i].file) imageUrl = await uploadImage(pathogen.id, items[i].file);
+        const entry = await insertEntry({ pathogenId: pathogen.id, ...form, imageUrl });
+        onSaved(entry);
+      } catch (e) {
+        setErr(`Erro na imagem ${i + 1}: ${e.message}`);
+        setProgress(null);
+        return;
       }
-      const created = await insertEntry({ pathogenId: pathogen.id, ...form, imageUrl });
-      // Normalize snake_case → camelCase for local state
-      onSaved({
-        ...created,
-        imgUrl: created.image_url,
-        commonName: created.common_name,
-      });
-      onClose();
-    } catch (e) {
-      setErr(e.message);
-    } finally {
-      setSaving(false);
     }
+    setProgress(null);
+    onClose();
   };
 
+  const saving = progress !== null;
+
   return (
-    <Modal title={`Novo registro · ${pathogen.name}`} onClose={onClose}>
-      <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+    <Modal title={`Novo registro · ${pathogen.name}`} onClose={onClose} wide>
+      <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
         {err && <ErrorMsg msg={err} />}
 
-        {/* Image */}
+        {/* Image section */}
         <div>
-          <label style={lS}>Fotomicrografia</label>
-          <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: "none" }} />
-          <input ref={camRef}  type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: "none" }} />
-          {preview ? (
-            <div style={{ position: "relative" }}>
-              <img src={preview} alt="" style={{ width: "100%", height: "150px", objectFit: "cover", borderRadius: "4px" }} />
-              <button onClick={() => { setFile(null); setPreview(null); }} style={{
-                position: "absolute", top: "8px", right: "8px",
-                background: "rgba(0,0,0,0.65)", border: "none", borderRadius: "50%",
-                color: "#e2e8f0", cursor: "pointer",
-                width: "26px", height: "26px", display: "flex",
-                alignItems: "center", justifyContent: "center",
-              }}><X size={13} /></button>
-            </div>
-          ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+            <label style={{ ...lS, marginBottom: 0 }}>
+              Fotomicrografias{files.length > 0 && (
+                <span style={{ color: "#c8a55e", marginLeft: "6px" }}>
+                  · {files.length} selecionada{files.length !== 1 ? "s" : ""}
+                </span>
+              )}
+            </label>
+            <div style={{ display: "flex", gap: "6px" }}>
+              <input ref={camRef} type="file" accept="image/*" capture="environment"
+                onChange={handleFiles} style={{ display: "none" }} />
+              <input ref={fileRef} type="file" accept="image/*" multiple
+                onChange={handleFiles} style={{ display: "none" }} />
               {[
-                { icon: <Camera size={15} />, label: "Câmera",  ref: camRef },
-                { icon: <Upload size={15} />, label: "Arquivo", ref: fileRef },
+                { icon: <Camera size={12} />, label: "Câmera", ref: camRef },
+                { icon: <Upload size={12} />, label: "Adicionar", ref: fileRef },
               ].map(b => (
                 <button key={b.label} onClick={() => b.ref.current.click()} style={{
-                  padding: "11px", background: "rgba(255,255,255,0.02)",
-                  border: "1px dashed rgba(255,255,255,0.1)", borderRadius: "4px",
-                  color: "#5a7090", cursor: "pointer",
-                  display: "flex", alignItems: "center", justifyContent: "center", gap: "7px",
-                  fontSize: "11px", fontFamily: "'Courier New',monospace",
+                  display: "flex", alignItems: "center", gap: "5px",
+                  padding: "5px 10px", background: "rgba(255,255,255,0.03)",
+                  border: "1px solid rgba(255,255,255,0.09)", borderRadius: "3px",
+                  color: "#5a7090", cursor: "pointer", fontSize: "10px",
+                  fontFamily: "'Courier New',monospace",
                 }}>{b.icon} {b.label}</button>
               ))}
+            </div>
+          </div>
+
+          {files.length === 0 ? (
+            <div onClick={() => fileRef.current.click()} style={{
+              padding: "28px", background: "rgba(255,255,255,0.02)",
+              border: "2px dashed rgba(255,255,255,0.08)", borderRadius: "4px",
+              color: "#3a5070", cursor: "pointer", textAlign: "center",
+              fontFamily: "'Courier New',monospace", fontSize: "11px",
+            }}
+            onMouseEnter={e => e.currentTarget.style.borderColor = "rgba(200,165,94,0.2)"}
+            onMouseLeave={e => e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"}>
+              <Upload size={20} style={{ marginBottom: "8px", opacity: 0.4 }} /><br />
+              Clique para selecionar — pode escolher várias imagens de uma vez
+            </div>
+          ) : (
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(90px, 1fr))",
+              gap: "8px",
+            }}>
+              {files.map(f => (
+                <div key={f.id} style={{
+                  position: "relative", borderRadius: "4px", overflow: "hidden",
+                  border: "1px solid rgba(255,255,255,0.08)", aspectRatio: "1",
+                }}>
+                  <img src={f.preview} alt="" style={{
+                    width: "100%", height: "100%", objectFit: "cover", display: "block",
+                  }} />
+                  <button onClick={() => removeFile(f.id)} style={{
+                    position: "absolute", top: "4px", right: "4px",
+                    background: "rgba(0,0,0,0.7)", border: "none", borderRadius: "50%",
+                    color: "#e2e8f0", cursor: "pointer",
+                    width: "20px", height: "20px", display: "flex",
+                    alignItems: "center", justifyContent: "center", padding: 0,
+                  }}><X size={11} /></button>
+                </div>
+              ))}
+              <div onClick={() => fileRef.current.click()} style={{
+                aspectRatio: "1", border: "1px dashed rgba(255,255,255,0.08)",
+                borderRadius: "4px", display: "flex", flexDirection: "column",
+                alignItems: "center", justifyContent: "center",
+                color: "#3a5070", cursor: "pointer",
+                fontSize: "10px", fontFamily: "'Courier New',monospace", gap: "4px",
+              }}>
+                <Plus size={16} /> mais
+              </div>
             </div>
           )}
         </div>
 
+        {/* Metadata */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
           <div>
             <label style={lS}>Coloração / Método *</label>
@@ -355,13 +483,38 @@ function AddEntryModal({ pathogen, onClose, onSaved }) {
 
         <div>
           <label style={lS}>Observações morfológicas</label>
-          <textarea value={form.notes} onChange={set("notes")} rows={4}
+          <textarea value={form.notes} onChange={set("notes")} rows={3}
             placeholder="Características morfológicas, achados relevantes, contexto clínico…"
             style={{ ...iS, resize: "vertical", lineHeight: 1.65 }} />
         </div>
 
-        <button onClick={handleSave} disabled={saving} style={{ ...btnPrimary, opacity: saving ? 0.6 : 1 }}>
-          {saving ? (file ? "ENVIANDO IMAGEM…" : "SALVANDO…") : "SALVAR REGISTRO"}
+        {/* Progress */}
+        {progress && (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between",
+              fontSize: "11px", color: "#5a7090", fontFamily: "'Courier New',monospace",
+              marginBottom: "6px" }}>
+              <span>Enviando imagem {progress.current} de {progress.total}…</span>
+              <span>{Math.round((progress.current / progress.total) * 100)}%</span>
+            </div>
+            <div style={{ height: "3px", background: "rgba(255,255,255,0.06)", borderRadius: "2px" }}>
+              <div style={{
+                height: "100%", borderRadius: "2px", background: "#c8a55e",
+                width: `${(progress.current / progress.total) * 100}%`,
+                transition: "width 0.3s ease",
+              }} />
+            </div>
+          </div>
+        )}
+
+        <button onClick={handleSave} disabled={saving}
+          style={{ ...btnPrimary, opacity: saving ? 0.6 : 1 }}>
+          {saving
+            ? `SALVANDO ${progress?.current}/${progress?.total}…`
+            : files.length > 1
+              ? `SALVAR ${files.length} REGISTROS`
+              : "SALVAR REGISTRO"
+          }
         </button>
       </div>
     </Modal>
@@ -416,7 +569,7 @@ function EntryCard({ entry, onZoom }) {
 
 // ─── Pathogen card ────────────────────────────────────────────────────────────
 
-function PathogenCard({ p, entryCount, methods, onClick }) {
+function PathogenCard({ p, entryCount, firstImgUrl, methods, onClick }) {
   const seed = (p.id || "0").charCodeAt(0) * 13;
   return (
     <div onClick={onClick} style={{
@@ -427,7 +580,10 @@ function PathogenCard({ p, entryCount, methods, onClick }) {
     onMouseEnter={e => { e.currentTarget.style.borderColor = "rgba(200,165,94,0.2)"; e.currentTarget.style.transform = "translateY(-2px)"; }}
     onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.055)"; e.currentTarget.style.transform = "translateY(0)"; }}>
       <div style={{ height: "120px", background: "#060c12", position: "relative", overflow: "hidden" }}>
-        <MicroPlaceholder method={methods[0] || "GMS"} seed={seed} />
+        {firstImgUrl
+          ? <img src={firstImgUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          : <MicroPlaceholder method={methods[0] || "GMS"} seed={seed} />
+        }
         <div style={{ position: "absolute", top: "8px", right: "8px" }}>
           <CatBadge cat={p.category} />
         </div>
@@ -459,166 +615,230 @@ function PathogenCard({ p, entryCount, methods, onClick }) {
   );
 }
 
-// ─── Home view ────────────────────────────────────────────────────────────────
+// ─── Root App ─────────────────────────────────────────────────────────────────
 
-function HomeView({ pathogens, entriesMap, onOpen }) {
-  const [search, setSearch] = useState("");
-  const [cat, setCat] = useState("all");
+export default function App() {
+  const [pathogens, setPathogens]           = useState([]);
+  const [entriesMap, setEntriesMap]         = useState({});
+  const [loading, setLoading]               = useState(true);
+  const [loadingEntries, setLoadingEntries] = useState(false);
+  const [globalErr, setGlobalErr]           = useState(null);
+  const [view, setView]                     = useState("home");
+  const [selectedId, setSelectedId]         = useState(null);
+  const [showAddP, setShowAddP]             = useState(false);
+  const [showAddE, setShowAddE]             = useState(false);
+  const [lightbox, setLightbox]             = useState(null);
+  const [search, setSearch]                 = useState("");
+  const [cat, setCat]                       = useState("all");
+  const [mFilter, setMFilter]               = useState("all");
 
-  const shown = pathogens.filter(p => {
+  const selected = pathogens.find(p => p.id === selectedId);
+
+  useEffect(() => {
+    fetchPathogens()
+      .then(data => setPathogens(data))
+      .catch(e => setGlobalErr(e.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const openPathogen = useCallback(async (id) => {
+    setSelectedId(id); setView("pathogen"); setMFilter("all");
+    if (entriesMap[id]) return;
+    setLoadingEntries(true);
+    try {
+      const data = await fetchEntries(id);
+      setEntriesMap(prev => ({ ...prev, [id]: data }));
+    } catch (e) {
+      setGlobalErr(e.message);
+    } finally {
+      setLoadingEntries(false);
+    }
+  }, [entriesMap]);
+
+  const goHome = () => { setView("home"); setSelectedId(null); };
+
+  const handlePathogenSaved = (p) => {
+    setPathogens(prev => [...prev, p].sort((a, b) => a.name.localeCompare(b.name)));
+    setEntriesMap(prev => ({ ...prev, [p.id]: [] }));
+  };
+
+  const handleEntrySaved = (entry) => {
+    setEntriesMap(prev => ({
+      ...prev,
+      [selectedId]: [entry, ...(prev[selectedId] || [])],
+    }));
+  };
+
+  const entries  = entriesMap[selectedId] || [];
+  const methods  = [...new Set(entries.map(e => e.method))];
+  const shown    = entries.filter(e => mFilter === "all" || e.method === mFilter);
+
+  const shownPathogens = pathogens.filter(p => {
     const q = search.toLowerCase();
     const matchQ = !q || p.name.toLowerCase().includes(q) || (p.common_name || "").toLowerCase().includes(q);
     return matchQ && (cat === "all" || p.category === cat);
   });
-
   const totalEntries = Object.values(entriesMap).reduce((a, e) => a + e.length, 0);
 
   return (
-    <div style={{ maxWidth: "960px", margin: "0 auto", padding: "28px 20px" }}>
-      {/* Search */}
-      <div style={{ position: "relative", marginBottom: "18px" }}>
-        <Search size={15} color="#4a6080" style={{ position: "absolute", left: "13px", top: "50%", transform: "translateY(-50%)" }} />
-        <input value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Buscar patógeno, doença…"
-          style={{ ...iS, paddingLeft: "38px", fontSize: "13.5px",
-            fontFamily: "Georgia,serif", border: "1px solid rgba(255,255,255,0.07)" }} />
-      </div>
+    <div style={{ minHeight: "100vh", background: "#070c12", color: "#e2e8f0",
+      fontFamily: "Georgia,'Times New Roman',serif" }}>
 
-      {/* Category pills */}
-      <div style={{ display: "flex", gap: "7px", flexWrap: "wrap", marginBottom: "20px" }}>
-        {[["all", "Todos"], ...Object.entries(CAT).map(([k, v]) => [k, v.label])].map(([k, label]) => {
-          const c = CAT[k];
-          const active = cat === k;
-          return (
-            <button key={k} onClick={() => setCat(k)} style={{
-              padding: "4px 12px", borderRadius: "2px", cursor: "pointer",
-              fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase",
-              fontFamily: "'Courier New',monospace",
-              background: active ? (c?.bg || "rgba(200,165,94,0.12)") : "transparent",
-              color: active ? (c?.color || "#c8a55e") : "#4a6080",
-              border: active ? `1px solid ${c?.border || "rgba(200,165,94,0.28)"}` : "1px solid rgba(255,255,255,0.06)",
-              transition: "all 0.12s",
-            }}>{label}</button>
-          );
-        })}
-      </div>
-
-      {/* Stats */}
-      <div style={{
-        display: "flex", gap: "20px", padding: "10px 14px", marginBottom: "22px",
-        background: "rgba(255,255,255,0.02)", borderRadius: "4px",
-        border: "1px solid rgba(255,255,255,0.04)",
-      }}>
-        {[
-          ["Patógenos", pathogens.length],
-          ["Registros", totalEntries],
-          ["Fungos", pathogens.filter(p => p.category === "fungi").length],
-          ["Parasitos", pathogens.filter(p => p.category === "parasite").length],
-        ].map(([label, val]) => (
-          <div key={label}>
-            <span style={{ fontSize: "18px", color: "#c8a55e", fontFamily: "'Courier New',monospace" }}>{val}</span>
-            <span style={{ fontSize: "10px", color: "#4a6080", fontFamily: "'Courier New',monospace", marginLeft: "5px" }}>{label.toLowerCase()}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* Grid */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: "14px" }}>
-        {shown.map(p => {
-          const entries = entriesMap[p.id] || [];
-          const methods = [...new Set(entries.map(e => e.method))];
-          return (
-            <PathogenCard key={p.id} p={p} entryCount={entries.length}
-              methods={methods} onClick={() => onOpen(p.id)} />
-          );
-        })}
-        {shown.length === 0 && (
-          <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "56px 20px", color: "#2a3a50" }}>
-            <Microscope size={36} strokeWidth={1} style={{ marginBottom: "10px", opacity: 0.4 }} />
-            <p style={{ fontFamily: "'Courier New',monospace", fontSize: "12px" }}>Nenhum resultado</p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Pathogen detail view ─────────────────────────────────────────────────────
-
-function PathogenView({ pathogen, entries, loading, onAddEntry }) {
-  const [mFilter, setMFilter] = useState("all");
-  const [lightbox, setLightbox] = useState(null);
-  const methods = [...new Set(entries.map(e => e.method))];
-  const shown = entries.filter(e => mFilter === "all" || e.method === mFilter);
-
-  return (
-    <div style={{ maxWidth: "960px", margin: "0 auto", padding: "28px 20px" }}>
       {/* Header */}
-      <div style={{
-        background: "#0d1521", border: "1px solid rgba(255,255,255,0.055)",
-        borderRadius: "6px", padding: "22px", marginBottom: "20px",
+      <header style={{
+        background: "#090e17", borderBottom: "1px solid rgba(255,255,255,0.045)",
+        padding: "0 20px", display: "flex", alignItems: "center", height: "52px",
+        gap: "10px", position: "sticky", top: 0, zIndex: 200,
       }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
-          <div>
-            <div style={{ marginBottom: "8px" }}><CatBadge cat={pathogen.category} /></div>
-            <h1 style={{ margin: "0 0 3px", fontSize: "22px", fontStyle: "italic",
-              fontWeight: "normal", color: "#e0e8f5", fontFamily: "Georgia,serif" }}>
-              {pathogen.name}
-            </h1>
-            <p style={{ margin: "0 0 12px", fontSize: "11px", color: "#4a6080",
-              fontFamily: "'Courier New',monospace" }}>{pathogen.common_name}</p>
-            <p style={{ margin: 0, fontSize: "13px", color: "#7a8ea8", lineHeight: 1.7,
-              maxWidth: "580px", fontFamily: "Georgia,serif" }}>{pathogen.description}</p>
-          </div>
-          <div style={{
-            background: "rgba(255,255,255,0.02)", borderRadius: "4px",
-            padding: "12px 18px", textAlign: "center", border: "1px solid rgba(255,255,255,0.04)",
+        {view === "pathogen" && (
+          <button onClick={goHome} style={{
+            background: "none", border: "none", color: "#4a6080", cursor: "pointer",
+            display: "flex", alignItems: "center", gap: "4px", padding: "6px 8px",
+            fontSize: "11px", fontFamily: "'Courier New',monospace", letterSpacing: "0.05em",
           }}>
-            <div style={{ fontSize: "26px", color: "#c8a55e", fontFamily: "'Courier New',monospace" }}>
-              {entries.length}
-            </div>
-            <div style={{ fontSize: "9px", color: "#4a6080", fontFamily: "'Courier New',monospace", letterSpacing: "0.08em" }}>
-              REGISTROS
-            </div>
-          </div>
-        </div>
-      </div>
+            <ChevronLeft size={14} /> Atlas
+          </button>
+        )}
+        <Microscope size={18} color="#c8a55e" strokeWidth={1.5} />
+        <span style={{ flex: 1, fontSize: "14px", color: "#c8a55e" }}>
+          {view === "home" ? "Atlas Microscópico" : (
+            <><span style={{ color: "#3a5070", fontSize: "12px", fontFamily: "'Courier New',monospace" }}>
+              {CAT[selected?.category]?.label} · </span><em>{selected?.name}</em></>
+          )}
+        </span>
+        <button onClick={() => view === "home" ? setShowAddP(true) : setShowAddE(true)} style={{
+          display: "flex", alignItems: "center", gap: "5px",
+          background: "rgba(200,165,94,0.09)", border: "1px solid rgba(200,165,94,0.22)",
+          color: "#c8a55e", borderRadius: "3px", padding: "5px 13px", cursor: "pointer",
+          fontSize: "10px", fontFamily: "'Courier New',monospace", letterSpacing: "0.08em",
+        }}>
+          <Plus size={12} /> {view === "home" ? "PATÓGENO" : "REGISTRO"}
+        </button>
+      </header>
 
-      {/* Method filter */}
-      {methods.length > 1 && (
-        <div style={{ display: "flex", gap: "7px", flexWrap: "wrap", marginBottom: "18px" }}>
-          {["all", ...methods].map(m => {
-            const col = m === "all" ? "#c8a55e" : mCol(m);
-            const active = mFilter === m;
-            return (
-              <button key={m} onClick={() => setMFilter(m)} style={{
-                padding: "3px 11px", borderRadius: "2px", cursor: "pointer",
-                fontSize: "10px", letterSpacing: "0.06em", fontFamily: "'Courier New',monospace",
-                background: active ? `${col}15` : "transparent",
-                color: active ? col : "#4a6080",
-                border: active ? `1px solid ${col}40` : "1px solid rgba(255,255,255,0.06)",
-                transition: "all 0.12s",
-              }}>{m === "all" ? "Todos" : m}</button>
-            );
-          })}
+      {globalErr && (
+        <div style={{ maxWidth: "960px", margin: "0 auto", padding: "16px 20px 0" }}>
+          <ErrorMsg msg={globalErr} />
         </div>
       )}
 
-      {loading
-        ? <Spinner />
-        : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(270px,1fr))", gap: "14px" }}>
-            {shown.map(e => <EntryCard key={e.id} entry={e} onZoom={setLightbox} />)}
-            {shown.length === 0 && (
-              <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "48px 20px", color: "#2a3a50" }}>
-                <p style={{ fontFamily: "'Courier New',monospace", fontSize: "12px" }}>
-                  {entries.length === 0 ? "Nenhum registro ainda — clique em + REGISTRO" : "Sem registros para esta coloração"}
-                </p>
-              </div>
-            )}
+      {/* ── HOME ── */}
+      {view === "home" && (
+        <div style={{ maxWidth: "960px", margin: "0 auto", padding: "28px 20px" }}>
+          <div style={{ position: "relative", marginBottom: "18px" }}>
+            <Search size={15} color="#4a6080" style={{ position: "absolute", left: "13px", top: "50%", transform: "translateY(-50%)" }} />
+            <input value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Buscar patógeno, doença…"
+              style={{ ...iS, paddingLeft: "38px", fontSize: "13.5px",
+                fontFamily: "Georgia,serif", border: "1px solid rgba(255,255,255,0.07)" }} />
           </div>
-        )
-      }
+
+          <div style={{ display: "flex", gap: "7px", flexWrap: "wrap", marginBottom: "20px" }}>
+            {[["all", "Todos"], ...Object.entries(CAT).map(([k, v]) => [k, v.label])].map(([k, label]) => {
+              const c = CAT[k]; const active = cat === k;
+              return (
+                <button key={k} onClick={() => setCat(k)} style={{
+                  padding: "4px 12px", borderRadius: "2px", cursor: "pointer",
+                  fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase",
+                  fontFamily: "'Courier New',monospace",
+                  background: active ? (c?.bg || "rgba(200,165,94,0.12)") : "transparent",
+                  color: active ? (c?.color || "#c8a55e") : "#4a6080",
+                  border: active ? `1px solid ${c?.border || "rgba(200,165,94,0.28)"}` : "1px solid rgba(255,255,255,0.06)",
+                }}>{label}</button>
+              );
+            })}
+          </div>
+
+          <div style={{ display: "flex", gap: "20px", padding: "10px 14px", marginBottom: "22px",
+            background: "rgba(255,255,255,0.02)", borderRadius: "4px",
+            border: "1px solid rgba(255,255,255,0.04)" }}>
+            {[["Patógenos", pathogens.length], ["Registros", totalEntries],
+              ["Fungos", pathogens.filter(p => p.category === "fungi").length],
+              ["Parasitos", pathogens.filter(p => p.category === "parasite").length],
+            ].map(([label, val]) => (
+              <div key={label}>
+                <span style={{ fontSize: "18px", color: "#c8a55e", fontFamily: "'Courier New',monospace" }}>{val}</span>
+                <span style={{ fontSize: "10px", color: "#4a6080", fontFamily: "'Courier New',monospace", marginLeft: "5px" }}>{label.toLowerCase()}</span>
+              </div>
+            ))}
+          </div>
+
+          {loading ? <Spinner /> : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: "14px" }}>
+              {shownPathogens.map(p => {
+                const pEntries  = entriesMap[p.id] || [];
+                const pMethods  = [...new Set(pEntries.map(e => e.method))];
+                const firstImg  = pEntries.find(e => e.image_url)?.image_url || null;
+                return (
+                  <PathogenCard key={p.id} p={p} entryCount={pEntries.length}
+                    firstImgUrl={firstImg} methods={pMethods} onClick={() => openPathogen(p.id)} />
+                );
+              })}
+              {shownPathogens.length === 0 && (
+                <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "56px 20px", color: "#2a3a50" }}>
+                  <Microscope size={36} strokeWidth={1} style={{ marginBottom: "10px", opacity: 0.4 }} />
+                  <p style={{ fontFamily: "'Courier New',monospace", fontSize: "12px" }}>Nenhum resultado</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── PATHOGEN DETAIL ── */}
+      {view === "pathogen" && selected && (
+        <div style={{ maxWidth: "960px", margin: "0 auto", padding: "28px 20px" }}>
+          <div style={{ background: "#0d1521", border: "1px solid rgba(255,255,255,0.055)",
+            borderRadius: "6px", padding: "22px", marginBottom: "20px" }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+              <div>
+                <div style={{ marginBottom: "8px" }}><CatBadge cat={selected.category} /></div>
+                <h1 style={{ margin: "0 0 3px", fontSize: "22px", fontStyle: "italic",
+                  fontWeight: "normal", color: "#e0e8f5", fontFamily: "Georgia,serif" }}>{selected.name}</h1>
+                <p style={{ margin: "0 0 12px", fontSize: "11px", color: "#4a6080",
+                  fontFamily: "'Courier New',monospace" }}>{selected.common_name}</p>
+                <p style={{ margin: 0, fontSize: "13px", color: "#7a8ea8", lineHeight: 1.7,
+                  maxWidth: "580px", fontFamily: "Georgia,serif" }}>{selected.description}</p>
+              </div>
+              <div style={{ background: "rgba(255,255,255,0.02)", borderRadius: "4px",
+                padding: "12px 18px", textAlign: "center", border: "1px solid rgba(255,255,255,0.04)" }}>
+                <div style={{ fontSize: "26px", color: "#c8a55e", fontFamily: "'Courier New',monospace" }}>{entries.length}</div>
+                <div style={{ fontSize: "9px", color: "#4a6080", fontFamily: "'Courier New',monospace", letterSpacing: "0.08em" }}>REGISTROS</div>
+              </div>
+            </div>
+          </div>
+
+          {methods.length > 1 && (
+            <div style={{ display: "flex", gap: "7px", flexWrap: "wrap", marginBottom: "18px" }}>
+              {["all", ...methods].map(m => {
+                const col = m === "all" ? "#c8a55e" : mCol(m); const active = mFilter === m;
+                return (
+                  <button key={m} onClick={() => setMFilter(m)} style={{
+                    padding: "3px 11px", borderRadius: "2px", cursor: "pointer",
+                    fontSize: "10px", letterSpacing: "0.06em", fontFamily: "'Courier New',monospace",
+                    background: active ? `${col}15` : "transparent",
+                    color: active ? col : "#4a6080",
+                    border: active ? `1px solid ${col}40` : "1px solid rgba(255,255,255,0.06)",
+                  }}>{m === "all" ? "Todos" : m}</button>
+                );
+              })}
+            </div>
+          )}
+
+          {loadingEntries ? <Spinner /> : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(270px,1fr))", gap: "14px" }}>
+              {shown.map(e => <EntryCard key={e.id} entry={e} onZoom={setLightbox} />)}
+              {shown.length === 0 && (
+                <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "48px 20px", color: "#2a3a50" }}>
+                  <p style={{ fontFamily: "'Courier New',monospace", fontSize: "12px" }}>
+                    {entries.length === 0 ? "Nenhum registro ainda — clique em + REGISTRO" : "Sem registros para esta coloração"}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Lightbox */}
       {lightbox && (
@@ -641,146 +861,11 @@ function PathogenView({ pathogen, entries, loading, onAddEntry }) {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-// ─── Root App ─────────────────────────────────────────────────────────────────
-
-export default function App() {
-  // State
-  const [pathogens, setPathogens] = useState([]);
-  const [entriesMap, setEntriesMap] = useState({});    // { pathogenId: entry[] }
-  const [loading, setLoading] = useState(true);
-  const [loadingEntries, setLoadingEntries] = useState(false);
-  const [globalErr, setGlobalErr] = useState(null);
-
-  const [view, setView]           = useState("home");  // "home" | "pathogen"
-  const [selectedId, setSelectedId] = useState(null);
-  const [showAddP, setShowAddP]   = useState(false);
-  const [showAddE, setShowAddE]   = useState(false);
-
-  const selected = pathogens.find(p => p.id === selectedId);
-
-  // ── Initial load ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    fetchPathogens()
-      .then(data => setPathogens(data))
-      .catch(e => setGlobalErr(e.message))
-      .finally(() => setLoading(false));
-  }, []);
-
-  // ── Load entries when opening a pathogen ──────────────────────────────────
-  const openPathogen = useCallback(async (id) => {
-    setSelectedId(id);
-    setView("pathogen");
-    if (entriesMap[id]) return;         // already loaded
-    setLoadingEntries(true);
-    try {
-      const data = await fetchEntries(id);
-      setEntriesMap(prev => ({ ...prev, [id]: data }));
-    } catch (e) {
-      setGlobalErr(e.message);
-    } finally {
-      setLoadingEntries(false);
-    }
-  }, [entriesMap]);
-
-  const goHome = () => { setView("home"); setSelectedId(null); };
-
-  // ── Callbacks ─────────────────────────────────────────────────────────────
-  const handlePathogenSaved = (p) => {
-    setPathogens(prev => [...prev, p].sort((a, b) => a.name.localeCompare(b.name)));
-    setEntriesMap(prev => ({ ...prev, [p.id]: [] }));
-  };
-
-  const handleEntrySaved = (entry) => {
-    setEntriesMap(prev => ({
-      ...prev,
-      [selectedId]: [entry, ...(prev[selectedId] || [])],
-    }));
-  };
-
-  const entries = entriesMap[selectedId] || [];
-
-  // ── Render ────────────────────────────────────────────────────────────────
-  return (
-    <div style={{ minHeight: "100vh", background: "#070c12", color: "#e2e8f0",
-      fontFamily: "Georgia,'Times New Roman',serif" }}>
-
-      {/* Header */}
-      <header style={{
-        background: "#090e17", borderBottom: "1px solid rgba(255,255,255,0.045)",
-        padding: "0 20px", display: "flex", alignItems: "center", height: "52px",
-        gap: "10px", position: "sticky", top: 0, zIndex: 200,
-      }}>
-        {view === "pathogen" && (
-          <button onClick={goHome} style={{
-            background: "none", border: "none", color: "#4a6080", cursor: "pointer",
-            display: "flex", alignItems: "center", gap: "4px", padding: "6px 8px",
-            fontSize: "11px", fontFamily: "'Courier New',monospace", letterSpacing: "0.05em",
-          }}>
-            <ChevronLeft size={14} /> Atlas
-          </button>
-        )}
-
-        <Microscope size={18} color="#c8a55e" strokeWidth={1.5} />
-
-        <span style={{ flex: 1, fontSize: "14px", color: "#c8a55e" }}>
-          {view === "home"
-            ? "Atlas Microscópico"
-            : <>
-                <span style={{ color: "#3a5070", fontSize: "12px", fontFamily: "'Courier New',monospace" }}>
-                  {CAT[selected?.category]?.label} · </span>
-                <em>{selected?.name}</em>
-              </>
-          }
-        </span>
-
-        <button onClick={() => view === "home" ? setShowAddP(true) : setShowAddE(true)} style={{
-          display: "flex", alignItems: "center", gap: "5px",
-          background: "rgba(200,165,94,0.09)", border: "1px solid rgba(200,165,94,0.22)",
-          color: "#c8a55e", borderRadius: "3px", padding: "5px 13px",
-          cursor: "pointer", fontSize: "10px",
-          fontFamily: "'Courier New',monospace", letterSpacing: "0.08em",
-        }}>
-          <Plus size={12} />
-          {view === "home" ? "PATÓGENO" : "REGISTRO"}
-        </button>
-      </header>
-
-      {/* Global error */}
-      {globalErr && (
-        <div style={{ maxWidth: "960px", margin: "0 auto", padding: "0 20px" }}>
-          <ErrorMsg msg={globalErr} />
-        </div>
-      )}
-
-      {/* Views */}
-      {loading
-        ? <Spinner />
-        : view === "home"
-          ? <HomeView pathogens={pathogens} entriesMap={entriesMap} onOpen={openPathogen} />
-          : selected && (
-              <PathogenView
-                pathogen={selected}
-                entries={entries}
-                loading={loadingEntries}
-                onAddEntry={() => setShowAddE(true)}
-              />
-            )
-      }
 
       {/* Modals */}
-      {showAddP && (
-        <AddPathogenModal onClose={() => setShowAddP(false)} onSaved={handlePathogenSaved} />
-      )}
+      {showAddP && <AddPathogenModal onClose={() => setShowAddP(false)} onSaved={handlePathogenSaved} />}
       {showAddE && selected && (
-        <AddEntryModal
-          pathogen={selected}
-          onClose={() => setShowAddE(false)}
-          onSaved={handleEntrySaved}
-        />
+        <AddEntryModal pathogen={selected} onClose={() => setShowAddE(false)} onSaved={handleEntrySaved} />
       )}
     </div>
   );
