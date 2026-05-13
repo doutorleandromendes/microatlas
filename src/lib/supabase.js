@@ -63,7 +63,34 @@ export async function insertEntry({ pathogenId, method, material, magnification,
   return data;
 }
 
+export async function updateEntry(id, { method, material, magnification, date, notes, imageUrl }) {
+  const { data, error } = await supabase
+    .from("entries")
+    .update({ method, material, magnification, date, notes, image_url: imageUrl })
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteEntry(id) {
+  const { error } = await supabase.from("entries").delete().eq("id", id);
+  if (error) throw error;
+}
+
 // ─── Storage ──────────────────────────────────────────────────────────────────
+
+export async function deleteImage(imageUrl) {
+  // Extract storage path from public URL
+  // URL format: .../storage/v1/object/public/microscopy-images/PATH
+  const marker = "/microscopy-images/";
+  const idx = imageUrl.indexOf(marker);
+  if (idx === -1) return; // not a storage URL, skip
+  const path = imageUrl.slice(idx + marker.length);
+  const { error } = await supabase.storage.from("microscopy-images").remove([path]);
+  if (error) console.warn("Storage delete failed (non-critical):", error.message);
+}
 
 export async function uploadImage(pathogenId, file) {
   const ext  = file.name.split(".").pop();

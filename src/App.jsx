@@ -6,6 +6,7 @@ import {
 import {
   fetchPathogens, insertPathogen,
   fetchEntries, insertEntry, uploadImage,
+  updateEntry, deleteEntry, deleteImage,
 } from "./lib/supabase.js";
 import { PATHOGEN_DB } from "./lib/pathogens.js";
 
@@ -521,9 +522,209 @@ function AddEntryModal({ pathogen, onClose, onSaved }) {
   );
 }
 
+// ─── Edit Entry Modal ─────────────────────────────────────────────────────────
+
+function EditEntryModal({ entry, pathogenId, onClose, onSaved, onDeleted }) {
+  const [form, setForm] = useState({
+    method:        entry.method        || "",
+    material:      entry.material      || "",
+    magnification: entry.magnification || "100x oil",
+    date:          entry.date          || new Date().toISOString().slice(0, 10),
+    notes:         entry.notes         || "",
+  });
+  const [newFile, setNewFile]       = useState(null);
+  const [preview, setPreview]       = useState(entry.image_url || null);
+  const [removeImg, setRemoveImg]   = useState(false);
+  const [saving, setSaving]         = useState(false);
+  const [deleting, setDeleting]     = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [err, setErr]               = useState(null);
+  const fileRef = useRef();
+  const set = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  const handleFile = e => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setNewFile(f);
+    setRemoveImg(false);
+    setPreview(URL.createObjectURL(f));
+    e.target.value = "";
+  };
+
+  const handleRemoveImg = () => {
+    setNewFile(null);
+    setPreview(null);
+    setRemoveImg(true);
+  };
+
+  const handleSave = async () => {
+    if (!form.method || !form.material) {
+      setErr("Coloração/método e material são obrigatórios."); return;
+    }
+    setSaving(true); setErr(null);
+    try {
+      let imageUrl = entry.image_url;
+
+      if (newFile) {
+        // Upload new image, delete old if exists
+        if (entry.image_url) await deleteImage(entry.image_url);
+        imageUrl = await uploadImage(pathogenId, newFile);
+      } else if (removeImg && entry.image_url) {
+        await deleteImage(entry.image_url);
+        imageUrl = null;
+      }
+
+      const updated = await updateEntry(entry.id, { ...form, imageUrl });
+      onSaved(updated);
+      onClose();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!confirmDel) { setConfirmDel(true); return; }
+    setDeleting(true); setErr(null);
+    try {
+      if (entry.image_url) await deleteImage(entry.image_url);
+      await deleteEntry(entry.id);
+      onDeleted(entry.id);
+      onClose();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <Modal title="Editar registro" onClose={onClose} wide>
+      <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+        {err && <ErrorMsg msg={err} />}
+
+        {/* Image */}
+        <div>
+          <label style={lS}>Fotomicrografia</label>
+          <input ref={fileRef} type="file" accept="image/*" multiple={false}
+            onChange={handleFile} style={{ display: "none" }} />
+
+          {preview ? (
+            <div style={{ position: "relative" }}>
+              <img src={preview} alt="" style={{
+                width: "100%", height: "180px", objectFit: "cover",
+                borderRadius: "4px", display: "block",
+              }} />
+              <div style={{
+                position: "absolute", top: "8px", right: "8px", display: "flex", gap: "6px",
+              }}>
+                <button onClick={() => fileRef.current.click()} style={{
+                  background: "rgba(0,0,0,0.7)", border: "1px solid rgba(255,255,255,0.15)",
+                  borderRadius: "3px", color: "#c8a55e", cursor: "pointer",
+                  padding: "4px 10px", fontSize: "10px", fontFamily: "'Courier New',monospace",
+                }}>TROCAR</button>
+                <button onClick={handleRemoveImg} style={{
+                  background: "rgba(0,0,0,0.7)", border: "1px solid rgba(248,113,113,0.3)",
+                  borderRadius: "3px", color: "#f87171", cursor: "pointer",
+                  padding: "4px 10px", fontSize: "10px", fontFamily: "'Courier New',monospace",
+                }}>REMOVER</button>
+              </div>
+            </div>
+          ) : (
+            <div onClick={() => fileRef.current.click()} style={{
+              padding: "24px", background: "rgba(255,255,255,0.02)",
+              border: "2px dashed rgba(255,255,255,0.08)", borderRadius: "4px",
+              color: "#3a5070", cursor: "pointer", textAlign: "center",
+              fontFamily: "'Courier New',monospace", fontSize: "11px",
+            }}
+            onMouseEnter={e => e.currentTarget.style.borderColor = "rgba(200,165,94,0.2)"}
+            onMouseLeave={e => e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"}>
+              <Upload size={18} style={{ marginBottom: "6px", opacity: 0.4 }} /><br />
+              {removeImg ? "Imagem removida — clique para adicionar nova" : "Sem imagem — clique para adicionar"}
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+          <div>
+            <label style={lS}>Coloração / Método *</label>
+            <select value={form.method} onChange={set("method")} style={{ ...iS, cursor: "pointer" }}>
+              <option value="">Selecionar…</option>
+              {ALL_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={lS}>Material *</label>
+            <select value={form.material} onChange={set("material")} style={{ ...iS, cursor: "pointer" }}>
+              <option value="">Selecionar…</option>
+              {ALL_MATERIALS.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+          <div>
+            <label style={lS}>Objetiva</label>
+            <select value={form.magnification} onChange={set("magnification")} style={{ ...iS, cursor: "pointer" }}>
+              {ALL_MAGS.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={lS}>Data</label>
+            <input type="date" value={form.date} onChange={set("date")} style={iS} />
+          </div>
+        </div>
+
+        <div>
+          <label style={lS}>Observações morfológicas</label>
+          <textarea value={form.notes} onChange={set("notes")} rows={3}
+            placeholder="Características morfológicas, achados relevantes…"
+            style={{ ...iS, resize: "vertical", lineHeight: 1.65 }} />
+        </div>
+
+        <button onClick={handleSave} disabled={saving || deleting}
+          style={{ ...btnPrimary, opacity: saving ? 0.6 : 1 }}>
+          {saving ? "SALVANDO…" : "SALVAR ALTERAÇÕES"}
+        </button>
+
+        {/* Delete zone */}
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.05)", paddingTop: "14px" }}>
+          {confirmDel ? (
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <span style={{ fontSize: "11px", color: "#f87171",
+                fontFamily: "'Courier New',monospace", flex: 1 }}>
+                Confirmar exclusão? Esta ação não pode ser desfeita.
+              </span>
+              <button onClick={handleDelete} disabled={deleting} style={{
+                background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.35)",
+                color: "#f87171", borderRadius: "3px", padding: "6px 14px",
+                cursor: "pointer", fontSize: "10px", fontFamily: "'Courier New',monospace",
+                whiteSpace: "nowrap",
+              }}>{deleting ? "EXCLUINDO…" : "CONFIRMAR"}</button>
+              <button onClick={() => setConfirmDel(false)} style={{
+                background: "none", border: "1px solid rgba(255,255,255,0.08)",
+                color: "#5a7090", borderRadius: "3px", padding: "6px 14px",
+                cursor: "pointer", fontSize: "10px", fontFamily: "'Courier New',monospace",
+              }}>CANCELAR</button>
+            </div>
+          ) : (
+            <button onClick={handleDelete} style={{
+              background: "none", border: "1px solid rgba(248,113,113,0.2)",
+              color: "#f87171", borderRadius: "3px", padding: "7px 14px",
+              cursor: "pointer", fontSize: "10px", fontFamily: "'Courier New',monospace",
+              letterSpacing: "0.08em", opacity: 0.7,
+            }}>EXCLUIR REGISTRO</button>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // ─── Entry card ───────────────────────────────────────────────────────────────
 
-function EntryCard({ entry, onZoom }) {
+function EntryCard({ entry, onZoom, onEdit }) {
   const seed = (entry.id || "x").charCodeAt(0) + ((entry.id || "x").charCodeAt(1) || 0);
   const imgUrl = entry.image_url || entry.imgUrl;
   return (
@@ -541,6 +742,18 @@ function EntryCard({ entry, onZoom }) {
         <div style={{ position: "absolute", top: "8px", left: "8px" }}>
           <MethodPill method={entry.method} small />
         </div>
+        {/* Edit button */}
+        <button onClick={e => { e.stopPropagation(); onEdit(entry); }} style={{
+          position: "absolute", top: "8px", right: "8px",
+          background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.12)",
+          borderRadius: "3px", color: "#94a3b8", cursor: "pointer",
+          padding: "3px 8px", fontSize: "9px", fontFamily: "'Courier New',monospace",
+          letterSpacing: "0.06em", transition: "color 0.15s, border-color 0.15s",
+        }}
+        onMouseEnter={e => { e.currentTarget.style.color = "#c8a55e"; e.currentTarget.style.borderColor = "rgba(200,165,94,0.35)"; }}
+        onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.12)"; }}>
+          EDITAR
+        </button>
       </div>
       <div style={{ padding: "12px 14px" }}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "9px" }}>
@@ -627,6 +840,7 @@ export default function App() {
   const [selectedId, setSelectedId]         = useState(null);
   const [showAddP, setShowAddP]             = useState(false);
   const [showAddE, setShowAddE]             = useState(false);
+  const [editingEntry, setEditingEntry]     = useState(null);
   const [lightbox, setLightbox]             = useState(null);
   const [search, setSearch]                 = useState("");
   const [cat, setCat]                       = useState("all");
@@ -666,6 +880,20 @@ export default function App() {
     setEntriesMap(prev => ({
       ...prev,
       [selectedId]: [entry, ...(prev[selectedId] || [])],
+    }));
+  };
+
+  const handleEntryUpdated = (updated) => {
+    setEntriesMap(prev => ({
+      ...prev,
+      [selectedId]: (prev[selectedId] || []).map(e => e.id === updated.id ? updated : e),
+    }));
+  };
+
+  const handleEntryDeleted = (id) => {
+    setEntriesMap(prev => ({
+      ...prev,
+      [selectedId]: (prev[selectedId] || []).filter(e => e.id !== id),
     }));
   };
 
@@ -827,7 +1055,7 @@ export default function App() {
 
           {loadingEntries ? <Spinner /> : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(270px,1fr))", gap: "14px" }}>
-              {shown.map(e => <EntryCard key={e.id} entry={e} onZoom={setLightbox} />)}
+              {shown.map(e => <EntryCard key={e.id} entry={e} onZoom={setLightbox} onEdit={setEditingEntry} />)}
               {shown.length === 0 && (
                 <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "48px 20px", color: "#2a3a50" }}>
                   <p style={{ fontFamily: "'Courier New',monospace", fontSize: "12px" }}>
@@ -866,6 +1094,15 @@ export default function App() {
       {showAddP && <AddPathogenModal onClose={() => setShowAddP(false)} onSaved={handlePathogenSaved} />}
       {showAddE && selected && (
         <AddEntryModal pathogen={selected} onClose={() => setShowAddE(false)} onSaved={handleEntrySaved} />
+      )}
+      {editingEntry && selected && (
+        <EditEntryModal
+          entry={editingEntry}
+          pathogenId={selected.id}
+          onClose={() => setEditingEntry(null)}
+          onSaved={handleEntryUpdated}
+          onDeleted={handleEntryDeleted}
+        />
       )}
     </div>
   );
